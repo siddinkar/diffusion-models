@@ -1,5 +1,7 @@
 import torch
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 class LinearNoiseScheduler:
     def __init__(self, timesteps, beta_start, beta_end):
         self.timesteps = timesteps
@@ -8,7 +10,7 @@ class LinearNoiseScheduler:
 
         self.betas = torch.linspace(beta_start, beta_end, timesteps)
         self.alphas = 1. - self.betas
-        self.alpha_product = torch.cumprod(self.alphas)
+        self.alpha_product = torch.cumprod(self.alphas, dim=0)
         self.sqrt_alpha_product = torch.sqrt(self.alpha_product)
         self.sqrt_one_minus_alpha_prod = torch.sqrt(1. - self.alpha_product)
 
@@ -16,12 +18,12 @@ class LinearNoiseScheduler:
         o_shape = original.shape
         batch_size = o_shape[0]
 
-        sqrt_alpha_prod = self.sqrt_alpha_product[t].reshape(batch_size)
-        sqrt_one_minus_alpha_prod = self.sqrt_one_minus_alpha_prod[t].reshape(batch_size)
+        sqrt_alpha_prod = self.sqrt_alpha_product[t].reshape(batch_size).to(device)
+        sqrt_one_minus_alpha_prod = self.sqrt_one_minus_alpha_prod[t].reshape(batch_size).to(device)
 
         for _ in range(len(o_shape) - 1):
-            sqrt_alpha_prod = sqrt_alpha_prod.unsqeeze(-1)
-            sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqeeze(-1)
+            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+            sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
 
         return sqrt_alpha_prod * original + sqrt_one_minus_alpha_prod * noise
 
