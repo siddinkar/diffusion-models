@@ -13,6 +13,7 @@ from schedulers.linear_scheduler import LinearNoiseScheduler
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
 def train(args):
     # read config file
     with open("../" + args.config_path, 'r') as file:
@@ -39,28 +40,29 @@ def train(args):
     model.train()
 
     # Create output directories
-    if not os.path.exists(train_config['task_name']):
-        os.mkdir(train_config['task_name'])
+    if not os.path.exists(os.path.join("../", train_config['task_name'])):
+        os.mkdir(os.path.join("../", train_config['task_name']))
 
     # Load checkpoint if found
-    if os.path.exists(os.path.join(train_config['task_name'], train_config['ckpt_name'])):
+    if os.path.exists(os.path.join("../", train_config['task_name'], train_config['ckpt_name'])):
         print('Loading checkpoint as found one')
-        model.load_state_dict(torch.load(os.path.join(train_config['task_name'],
+        model.load_state_dict(torch.load(os.path.join("../",
+                                                      train_config['task_name'],
                                                       train_config['ckpt_name']), map_location=device))
 
     # Specify training parameters
     num_epochs = train_config['num_epochs']
     optimizer = Adam(model.parameters(), lr=train_config['lr'])
-    criterion = torch.nn.KLDivLoss()
+    criterion = torch.nn.MSELoss()
 
     for epoch in range(num_epochs):
         losses = []
         for img in tqdm(loader):
             optimizer.zero_grad()
-            img = (img[0] / 256.0).float().to(device)
+            img = img.to(device)
 
             # random noise
-            noise = torch.randn_like(img).to(device)
+            noise = torch.normal(mean=0.0, std=1., size=img.shape).to(device)
 
             # random timestep
             t = torch.randint(0, diffusion_config['num_timesteps'], (img.shape[0],)).to(device)
@@ -74,7 +76,7 @@ def train(args):
             loss.backward()
             optimizer.step()
 
-        print('Finished epoch:{} | Loss: {:.4f}'.format(
+        print('Finished epoch: {} | Loss: {:.4f}'.format(
             epoch + 1,
             np.mean(losses)
         ))
@@ -83,6 +85,7 @@ def train(args):
                                                     train_config['ckpt_name']))
 
     print('Done Training...')
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Arguments for ddpm training')

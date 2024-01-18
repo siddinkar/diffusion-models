@@ -1,11 +1,12 @@
 import torch
 from torch.utils.data.dataset import Dataset
+import torchvision
 import cv2
 import numpy as np
 
 def unpickle(file):
     import pickle
-    with open("/home/sid/diffusion-models/data/cifar-10-batches-py/data_batch_1", 'rb') as fo:
+    with open("/home/sid/diffusion-models/data/cifar-10-batches-py/data_batch_5", 'rb') as fo:
         dict = pickle.load(fo, encoding='bytes')
     return dict
 
@@ -22,9 +23,8 @@ class CifarDataset(Dataset):
     def __getitem__(self, index):
         img = torch.tensor(self.images[index], dtype=torch.uint8)
         img = torch.reshape(img, (3, 32, 32))
-        # cv2.imshow("s", np.array(img.T))
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        img = (img / 255.0).float()
+        img = (2 * img) - 1
 
         return img
 

@@ -3,8 +3,8 @@ import torch.nn as nn
 
 
 def get_time_embedding(time_steps, t_emb_dim):
-    factor = 1e5 ** ((torch.arange(
-        start=0, end=t_emb_dim // 2, device=time_steps.device) / (t_emb_dim // 2)
+    factor = 10000 ** ((torch.arange(
+        start=0, end=t_emb_dim // 2, dtype=torch.float32, device=time_steps.device) / (t_emb_dim // 2)
                       ))
     t_emb = time_steps[:, None].repeat(1, t_emb_dim // 2) / factor
     t_emb = torch.cat([torch.sin(t_emb), torch.cos(t_emb)], dim=-1)
@@ -16,23 +16,52 @@ class DownBlock(nn.Module):
         super().__init__()
         self.down_sample = down_sample
         self.num_layers = num_layers
-        self.resnet_conv_first = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
-            nn.SiLU(),
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.resnet_conv_first = nn.ModuleList([
+                nn.Sequential(
+                    nn.GroupNorm(8, in_channels if i == 0 else out_channels),
+                    nn.SiLU(),
+                    nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                )
+                for i in range(num_layers)
+            ]
         )
-        self.t_emb_layers = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(t_emb_dim, out_channels)
+        self.t_emb_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.SiLU(),
+                    nn.Linear(t_emb_dim, out_channels)
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.resnet_conv_second = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
-            nn.SiLU(),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.resnet_conv_second = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.GroupNorm(8, out_channels),
+                    nn.SiLU(),
+                    nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.attention_norm = nn.GroupNorm(8, out_channels)
-        self.attention = nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
-        self.residual_input_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.attention_norm = nn.ModuleList(
+            [
+                nn.GroupNorm(8, out_channels)
+                for _ in range(num_layers)
+            ]
+        )
+        self.attention = nn.ModuleList(
+            [
+                nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                for _ in range(num_layers)
+            ]
+        )
+        self.residual_input_conv = nn.ModuleList(
+            [
+                nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=1)
+                for i in range(num_layers)
+            ]
+        )
         self.down_sample_conv = nn.Conv2d(out_channels, out_channels, kernel_size=4, stride=2,
                                           padding=1) if self.down_sample else nn.Identity()
 
@@ -42,18 +71,18 @@ class DownBlock(nn.Module):
         for i in range(self.num_layers):
             # ResNet block
             resnet_input = out
-            out = self.resnet_conv_first(out)
-            out = out + self.t_emb_layers(t_emb)[:, :, None, None]
-            out = self.resnet_conv_second(out)
-            out = out + self.residual_input_conv(resnet_input)
+            out = self.resnet_conv_first[i](out)
+            out = out + self.t_emb_layers[i](t_emb)[:, :, None, None]
+            out = self.resnet_conv_second[i](out)
+            out = out + self.residual_input_conv[i](resnet_input)
 
             # Attention Block
             batch_size, channels, h, w = out.shape
             in_attn = out.reshape(batch_size, channels, h * w)
-            in_attn = self.attention_norm(in_attn)
+            in_attn = self.attention_norm[i](in_attn)
             in_attn = in_attn.transpose(1, 2)
 
-            out_attn, _ = self.attention(in_attn, in_attn, in_attn)
+            out_attn, _ = self.attention[i](in_attn, in_attn, in_attn)
             out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
             out = out + out_attn
 
@@ -67,45 +96,40 @@ class MidBlock(nn.Module):
         self.num_layers = num_layers
         self.resnet_conv_first = nn.ModuleList([
             nn.Sequential(
-                nn.GroupNorm(8, in_channels),
+                nn.GroupNorm(8, in_channels if i == 0 else out_channels),
                 nn.SiLU(),
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-            ),
-            nn.Sequential(
-                nn.GroupNorm(8, in_channels),
-                nn.SiLU(),
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=3, stride=1, padding=1)
             )
+            for i in range(num_layers + 1)
         ])
 
         self.t_emb_layers = nn.ModuleList([
             nn.Sequential(
                 nn.SiLU(),
                 nn.Linear(t_emb_dim, out_channels)
-            ),
-            nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(t_emb_dim, out_channels)
             )
+            for _ in range(num_layers + 1)
         ])
 
         self.resnet_conv_second = nn.ModuleList([
             nn.Sequential(
-                nn.GroupNorm(8, in_channels),
-                nn.SiLU(),
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
-            ),
-            nn.Sequential(
-                nn.GroupNorm(8, in_channels),
+                nn.GroupNorm(8, out_channels),
                 nn.SiLU(),
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
             )
+            for _ in range(num_layers + 1)
         ])
-        self.attention_norm = nn.GroupNorm(8, out_channels)
-        self.attention = nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+        self.attention_norm = nn.ModuleList([
+            nn.GroupNorm(8, out_channels)
+            for _ in range(num_layers)
+        ])
+        self.attention = nn.ModuleList([
+            nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+            for _ in range(num_layers)
+        ])
         self.residual_input_conv = nn.ModuleList([
-            nn.Conv2d(in_channels, out_channels, kernel_size=1),
-            nn.Conv2d(out_channels, out_channels, kernel_size=1)
+            nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=1)
+            for i in range(num_layers + 1)
         ])
 
     def forward(self, x, t_emb):
@@ -122,19 +146,19 @@ class MidBlock(nn.Module):
             # Attention Block
             batch_size, channels, h, w = out.shape
             in_attn = out.reshape(batch_size, channels, h * w)
-            in_attn = self.attention_norm(in_attn)
+            in_attn = self.attention_norm[i](in_attn)
             in_attn = in_attn.transpose(1, 2)
 
-            out_attn, _ = self.attention(in_attn, in_attn, in_attn)
+            out_attn, _ = self.attention[i](in_attn, in_attn, in_attn)
             out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
             out = out + out_attn
 
             # second resnet block
             resnet_input = out
-            out = self.resnet_conv_first[1](out)
-            out = out + self.t_emb_layers[1](t_emb)[:, :, None, None]
-            out = self.resnet_conv_second[1](out)
-            out = out + self.residual_input_conv[1](resnet_input)
+            out = self.resnet_conv_first[i + 1](out)
+            out = out + self.t_emb_layers[i+ 1](t_emb)[:, :, None, None]
+            out = self.resnet_conv_second[i + 1](out)
+            out = out + self.residual_input_conv[i + 1](resnet_input)
 
         return out
 
@@ -144,23 +168,53 @@ class UpBlock(nn.Module):
         super().__init__()
         self.up_sample = up_sample
         self.num_layers = num_layers
-        self.resnet_conv_first = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
-            nn.SiLU(),
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.resnet_conv_first = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.GroupNorm(8, in_channels if i == 0 else out_channels),
+                    nn.SiLU(),
+                    nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                )
+                for i in range(num_layers)
+            ]
         )
-        self.t_emb_layers = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(t_emb_dim, out_channels)
+        self.t_emb_layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.SiLU(),
+                    nn.Linear(t_emb_dim, out_channels)
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.resnet_conv_second = nn.Sequential(
-            nn.GroupNorm(8, in_channels),
-            nn.SiLU(),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.resnet_conv_second = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.GroupNorm(8, out_channels),
+                    nn.SiLU(),
+                    nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.attention_norm = nn.GroupNorm(8, out_channels)
-        self.attention = nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
-        self.residual_input_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.attention_norm = nn.ModuleList(
+            [
+                nn.GroupNorm(8, out_channels)
+                for _ in range(num_layers)
+            ]
+        )
+        self.attention = nn.ModuleList(
+            [
+                nn.MultiheadAttention(out_channels, num_heads, batch_first=True)
+                for _ in range(num_layers)
+            ]
+        )
+        self.residual_input_conv = nn.ModuleList(
+            [
+                nn.Conv2d(in_channels if i == 0 else out_channels, out_channels, kernel_size=1)
+                for i in range(num_layers)
+            ]
+        )
         self.up_sample_conv = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=4, stride=2,
                                                  padding=1) if self.up_sample else nn.Identity()
 
@@ -173,22 +227,21 @@ class UpBlock(nn.Module):
         for i in range(self.num_layers):
             # ResNet block
             resnet_input = out
-            out = self.resnet_conv_first(out)
-            out = out + self.t_emb_layers(t_emb)[:, :, None, None]
-            out = self.resmet_conv_second(out)
-            out = out + self.residual_input_conv(resnet_input)
+            out = self.resnet_conv_first[i](out)
+            out = out + self.t_emb_layers[i](t_emb)[:, :, None, None]
+            out = self.resnet_conv_second[i](out)
+            out = out + self.residual_input_conv[i](resnet_input)
 
             # Attention Block
             batch_size, channels, h, w = out.shape
             in_attn = out.reshape(batch_size, channels, h * w)
-            in_attn = self.attention_norm(in_attn)
+            in_attn = self.attention_norm[i](in_attn)
             in_attn = in_attn.transpose(1, 2)
 
-            out_attn, _ = self.attention(in_attn, in_attn, in_attn)
+            out_attn, _ = self.attention[i](in_attn, in_attn, in_attn)
             out_attn = out_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
             out = out + out_attn
 
-        out = self.up_sample_conv(out)
         return out
 
 
@@ -214,7 +267,7 @@ class Unet(nn.Module):
             nn.Linear(self.t_emb_dim, self.t_emb_dim)
         )
         self.up_sample = list(reversed(self.down_sample))
-        self.conv_in = nn.Conv2d(in_channels, self.down_channels[0], kernel_size=3, padding=1)
+        self.conv_in = nn.Conv2d(in_channels, self.down_channels[0], kernel_size=3, padding=(1, 1))
 
         self.downs = nn.ModuleList([])
         for i in range(len(self.down_channels) - 1):
@@ -252,11 +305,10 @@ class Unet(nn.Module):
         self.conv_out = nn.Conv2d(16, in_channels, kernel_size=3, padding=1)
 
     def forward(self, x, t):
-        print(x.shape)
-        print(t.shape)
         out = self.conv_in(x)
         t_emb = get_time_embedding(torch.as_tensor(t).long(), self.t_emb_dim)
         t_emb = self.t_proj(t_emb)
+
 
         down_outputs = []
         for down in self.downs:

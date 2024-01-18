@@ -28,7 +28,7 @@ class LinearNoiseScheduler:
         return sqrt_alpha_prod * original + sqrt_one_minus_alpha_prod * noise
 
     def sample_prev_timestep(self, xt, noise_pred, t):
-        x0 = (xt - self.sqrt_one_minus_alpha_prod[t] * noise_pred) / self.sqrt_alpha_product[t]
+        x0 = (xt - (self.sqrt_one_minus_alpha_prod[t] * noise_pred)) / self.sqrt_alpha_product[t]
         x0 = torch.clamp(x0, -1., 1.)
 
         mean = xt - ((self.betas[t] * noise_pred) / self.sqrt_one_minus_alpha_prod[t])
@@ -42,4 +42,7 @@ class LinearNoiseScheduler:
             sigma = variance ** .5
             z = torch.randn(xt.shape).to(xt.device)
             return mean + sigma * z, x0
+
+    def loss_coeff(self, t):
+        return self.betas[t] / (2 * torch.sqrt(1. - self.betas[t]) * self.alphas[t] * (1. - self.alpha_product[t]))
 
